@@ -2,7 +2,7 @@ TARGET := kernel.bin
 ISO := lumora.iso
 
 AS := nasm
-CC := gcc
+CC := g++
 LD := ld
 
 CFLAGS := -m32 -ffreestanding -fno-pie -fno-stack-protector
@@ -15,7 +15,7 @@ all: $(ISO)
 boot.o: boot.asm
 	$(AS) -f elf32 $< -o $@
 
-kernel.o: kernel.c
+kernel.o: kernel.cpp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(TARGET): boot.o kernel.o linker.ld

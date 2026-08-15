@@ -2,6 +2,7 @@
 
 static uint16_t* const VGA = (uint16_t*)0xB8000;
 
+extern "C" {
 void kernel_main(void)
 {
     const char* msg = "Welcome to Lumora OS!";
@@ -16,4 +17,6 @@ void kernel_main(void)
     {
         __asm__ volatile ("hlt");
     }
+}
+
 }
