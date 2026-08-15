@@ -13,10 +13,6 @@ void kernel_main(void)
         VGA[i] = ((uint16_t)color << 8) | msg[i];
     }
 
-    while (1)
-    {
-        __asm__ volatile ("hlt");
-    }
 }
 
 }
