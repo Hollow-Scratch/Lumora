@@ -6,7 +6,7 @@ CC := g++
 LD := ld
 
 
-CFLAGS := -m32 -ffreestanding -fno-pie -fno-stack-protector
+CFLAGS := -m32 -ffreestanding -fno-pie -fno-stack-protector -Iinclude
 LDFLAGS := -m elf_i386 -T arch/x86/linker.ld
 
 .PHONY: all clean iso run
@@ -20,8 +20,11 @@ boot.o: arch/x86/boot.asm
 kernel.o: kernel/kernel.cpp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(TARGET): boot.o kernel.o arch/x86/linker.ld
-	$(LD) $(LDFLAGS) -o $@ boot.o kernel.o
+printv.o: kernel/printv.cpp
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET): boot.o kernel.o printv.o arch/x86/linker.ld
+	$(LD) $(LDFLAGS) -o $@ boot.o kernel.o printv.o
 
 iso: $(TARGET)
 	cp $(TARGET) iso/boot/kernel.bin

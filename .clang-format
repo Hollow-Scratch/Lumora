@@ -1,0 +1,79 @@
+# =================================================================
+#                 Lumora Operating System Code Style
+# =================================================================
+
+BasedOnStyle: LLVM
+
+# Language targeting C++ standard rules for the kernel engine
+Language: Cpp
+Standard: c++23
+
+# Indentation Rules
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+# Column Constraints
+ColumnLimit: 80
+
+# Brace Wrapping Specifications
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel: false
+  AfterClass: false
+  AfterControlStatement: Never
+  AfterEnum: false
+  AfterFunction: true
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeCatch: false
+  BeforeElse: false
+  IndentBraces: false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+  SplitEmptyNamespace: true
+
+# Pointer and Reference Alignment
+PointerAlignment: Right
+
+# Whitespace Layout Optimizations
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: Never
+
+# Column Realignment Blueprints
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignEscapedNewlines: Right
+AlignOperands: Align
+AlignTrailingComments: true
+
+# Namespace/Extern Manipulation Guards
+FixNamespaceComments: true
+NamespaceIndentation: None
+
+# Modifier Ordering
+QualifierAlignment: Left
+
+# Space Modifiers
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCaseColon: false
+SpaceBeforeParens: ControlStatements
+SpaceBeforeSquareBrackets: false
+SpaceInEmptyBlock: false
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 2
+SpacesInContainerLiterals: false
+SpacesInCStyleCastParentheses: false
+SpacesInConditionalStatement: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# Include Category Categorizations
+IncludeBlocks: Preserve
