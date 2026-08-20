@@ -3,8 +3,9 @@
 extern "C" {
 void kernel_main(void)
 {
-
-    printv("Hello again!");
+    clear_screen();
+    printv("Hello again! \n");
+    printv("HAHHA AGAIN");
 
 }
 
