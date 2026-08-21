@@ -3,10 +3,8 @@
 extern "C" {
 void kernel_main(void)
 {
-    clear_screen();
-    printv("Hello again! \n");
-    printv("HAHHA AGAIN");
-
+	clear_screen();
+	printv("Hello again! \n");
+	printv("HAHHA AGAIN");
 }
-
 }

@@ -6,12 +6,12 @@ BasedOnStyle: LLVM
 
 # Language targeting C++ standard rules for the kernel engine
 Language: Cpp
-Standard: c++23
+Standard: Latest
 
 # Indentation Rules
 IndentWidth: 4
 TabWidth: 4
-UseTab: Never
+UseTab: Always
 
 # Column Constraints
 ColumnLimit: 80
@@ -42,7 +42,7 @@ AllowShortBlocksOnASingleLine: Never
 AllowShortCaseLabelsOnASingleLine: false
 AllowShortFunctionsOnASingleLine: None
 AllowShortIfStatementsOnASingleLine: Never
-AllowShortLoopsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
 
 # Column Realignment Blueprints
 AlignAfterOpenBracket: Align

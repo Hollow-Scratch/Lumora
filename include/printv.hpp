@@ -9,10 +9,10 @@ extern "C" {
 void clear_screen();
 
 // Prints a null-terminated string with automatic line wrapping and scrolling
-void printv(const char* str);
+void printv(const char *str);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif // PRINT_H
+#endif	// PRINT_H

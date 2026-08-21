@@ -5,17 +5,17 @@ AS := nasm
 CC := g++
 LD := ld
 
+CFLAGS := -m64 -ffreestanding -fno-pie -fno-stack-protector -mno-red-zone -mno-mmx -mno-sse -Iinclude
 
-CFLAGS := -m32 -ffreestanding -fno-pie -fno-stack-protector -Iinclude
-LDFLAGS := -m elf_i386 -T arch/x86/linker.ld
+LDFLAGS := -m elf_x86_64 -T arch/x86/linker.ld
 
 .PHONY: all clean iso run
 
 all: $(ISO)
 
-
+# FIX: Changed -f elf32 to -f elf64
 boot.o: arch/x86/boot.asm
-	$(AS) -f elf32 $< -o $@
+	$(AS) -f elf64 $< -o $@
 
 kernel.o: kernel/kernel.cpp
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -23,18 +23,22 @@ kernel.o: kernel/kernel.cpp
 printv.o: kernel/printv.cpp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(TARGET): boot.o kernel.o printv.o arch/x86/linker.ld
-	$(LD) $(LDFLAGS) -o $@ boot.o kernel.o printv.o
+gdt.o: kernel/gdt.cpp
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET): boot.o kernel.o printv.o gdt.o arch/x86/linker.ld
+	$(LD) $(LDFLAGS) -o $@ boot.o kernel.o printv.o gdt.o
 
 iso: $(TARGET)
+	mkdir -p iso/boot/grub
 	cp $(TARGET) iso/boot/kernel.bin
 	grub-mkrescue -o $(ISO) iso
 
 $(ISO): iso
 
 run: $(ISO)
-	qemu-system-i386 -cdrom $(ISO)
+	qemu-system-x86_64 -cdrom $(ISO)
 
 clean:
-	rm -f boot.o kernel.o $(TARGET) $(ISO)
+	rm -f boot.o kernel.o printv.o gdt.o $(TARGET) $(ISO)
 	rm -f iso/boot/kernel.bin
