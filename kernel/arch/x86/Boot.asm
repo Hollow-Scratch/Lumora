@@ -1,194 +1,150 @@
-MULTIBOOT_MAGIC equ 0x1BADB002
-MULTIBOOT_FLAG equ 0
-MULTIBOOT_CHECKSUM equ -(MULTIBOOT_MAGIC + MULTIBOOT_FLAG)
+; i386 Multiboot 2 entry. GRUB enters in 32-bit protected mode with paging
+; disabled, EAX=0x36d76289 and EBX=physical boot-info pointer.
+%define MB2_HEADER_MAGIC 0xE85250D6
+%define MB2_ARCH_I386    0
+%define MB2_BOOT_MAGIC   0x36D76289
+%define GDT_SEL_NULL     0x00
+%define GDT_SEL_CODE32   0x08
+%define GDT_SEL_DATA     0x10
+%define GDT_SEL_CODE64   0x18
+%define GDT_SEL_DATA64   0x20
+%define STACK_SIZE       16384
 
-STACK_SIZE equ 16384
-
-section .multiboot
-dd MULTIBOOT_MAGIC
-dd MULTIBOOT_FLAG
-dd MULTIBOOT_CHECKSUM
+section .multiboot2
+align 8
+mb2_header:
+    dd MB2_HEADER_MAGIC
+    dd MB2_ARCH_I386
+    dd mb2_header_end - mb2_header
+    dd -(MB2_HEADER_MAGIC + MB2_ARCH_I386 + (mb2_header_end - mb2_header))
+    ; Optional information request: mmap (6), framebuffer (8), boot loader (2),
+    ; and command line (1). Unknown/unavailable optional tags are harmless.
+    dw 1, 1
+    dd 24
+    dd 6, 8, 2, 1
+    align 8, db 0
+    ; Request a preferred 1024x768x32 framebuffer; GRUB may choose another.
+    dw 5, 0
+    dd 20
+    dd 1024, 768, 32
+    align 8, db 0
+    dw 0, 0
+    dd 8
+mb2_header_end:
 
 section .text32
 bits 32
 global start
 extern kernel_main
-global multiboot_magic
-global multiboot_info
+global mb2_handoff_magic
+global mb2_handoff_info
 
 start:
-	cli
-	cld
-	; Preserve the Multiboot 1 handoff values before using EAX/EBX.
-	mov [multiboot_magic], eax
-	mov [multiboot_info], ebx
-	mov esp, stack_top
-
-	; 1. Load clean 32-bit GDT layout into the CPU
-	lgdt [gdt_descriptor]
-
-	; 2. Reload the Code Segment (CS) register using a 32-bit Far Jump
-	jmp 0x08:.reload_segments
-
+    cli
+    cld
+    mov [mb2_handoff_magic], eax
+    mov [mb2_handoff_info], ebx
+    mov esp, stack_top
+    lgdt [gdt_descriptor]
+    jmp GDT_SEL_CODE32:.reload_segments
 .reload_segments:
-	; 3. Reload all data and stack segment registers with 32-bit Data index (0x10)
-	mov ax, 0x10
-	mov ds, ax
-	mov es, ax
-	mov fs, ax
-	mov gs, ax
-	mov ss, ax
+    mov ax, GDT_SEL_DATA
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
 
-	; 4. Set up the 4-level Page Tables
-	call setup_page_tables
+    ; Build four 1 GiB identity-mapped regions using 2 MiB pages (0..4 GiB).
+    mov edi, pml4_table
+    xor eax, eax
+    mov ecx, 6 * 1024
+    rep stosd
+    mov eax, pdpt_table
+    or eax, 3
+    mov [pml4_table], eax
+    mov dword [pml4_table + 4], 0
+    mov edi, pdpt_table
+    mov eax, pd0_table
+    or eax, 3
+    mov [edi], eax
+    mov eax, pd1_table
+    or eax, 3
+    mov [edi + 8], eax
+    mov eax, pd2_table
+    or eax, 3
+    mov [edi + 16], eax
+    mov eax, pd3_table
+    or eax, 3
+    mov [edi + 24], eax
+    mov esi, pd0_table
+    xor ebx, ebx
+    mov ecx, 2048
+.map_2m:
+    mov eax, ebx
+    or eax, 0x83                 ; present, writable, 2 MiB page
+    mov [esi], eax
+    mov dword [esi + 4], 0
+    add esi, 8
+    add ebx, 0x200000
+    loop .map_2m
 
-	; 5. Enable PAE (Physical Address Extension) - Required for Long Mode
-	mov eax, cr4
-	or eax, 1 << 5      ; Set PAE-bit (bit 5)
-	mov cr4, eax
+    mov eax, cr4
+    or eax, 1 << 5
+    mov cr4, eax
+    mov ecx, 0xC0000080
+    rdmsr
+    or eax, 1 << 8               ; EFER.LME
+    wrmsr
+    mov eax, pml4_table
+    mov cr3, eax
+    mov eax, cr0
+    or eax, 1 << 31              ; CR0.PG activates long mode with PAE/LME
+    mov cr0, eax
+    ; GDTR already references this low, identity-mapped GDT. Far jump reloads CS.
+    jmp GDT_SEL_CODE64:start_64bit
 
-	; 6. Set Long Mode Bit in the EFER MSR (Extended Feature Enable Register)
-	mov ecx, 0xC0000080 ; EFER MSR register address
-	rdmsr               ; Read current MSR into EAX
-	or eax, 1 << 8      ; Set Long Mode Active bit (bit 8)
-	wrmsr               ; Write it back
-
-	; 7. Enable Paging to turn on Long Mode execution
-	mov eax, pml4_table ; Load the base address of our PML4 table directly
-	mov cr3, eax
-
-	mov eax, cr0
-	or eax, 1 << 31     ; Set Paging-bit (bit 31)
-	mov cr0, eax
-
-	; 8. Load the GDT Pointer again (Updates GDTR to handle 64-bit base safely)
-	lgdt [gdt_descriptor]
-
-	; 9. Jump into the 64-bit Code Segment (0x18)
-	jmp 0x18:start_64bit
-
-
-; --- Helper function to build page tables safely in 32-bit mode ---
-setup_page_tables:
-	; Zero out all 4 page tables first to remove uninitialized RAM garbage
-	; (4 tables * 4096 bytes = 16384 bytes = 4096 dwords)
-	mov ecx, 4096
-	xor eax, eax
-	mov edi, pml4_table
-	rep stosd
-
-	; Link PML4 Entry 0 -> PDPT Table
-	mov eax, pdpt_table
-	or eax, 0b11        ; Present + Writable flags
-	mov [pml4_table], eax
-
-	; Link PDPT Entry 0 -> Page Directory Table
-	mov eax, pd_table
-	or eax, 0b11        ; Present + Writable flags
-	mov [pdpt_table], eax
-
-	; Link Page Directory Entry 0 -> Page Table
-	mov eax, pt_table
-	or eax, 0b11        ; Present + Writable flags
-	mov [pd_table], eax
-
-	; Map the Page Table entries (Identity map 512 entries * 4KB = 2MB total space)
-	mov ecx, 0          ; Loop counter index
-
-.map_pt_loop:
-	mov eax, 0x1000     ; 4096 bytes per page frame
-	mul ecx             ; EAX = counter * 4096 (Physical address)
-	or eax, 0b11        ; Present + Writable flags
-	
-	; Safely write the 64-bit entry using two 32-bit steps
-	mov [pt_table + ecx * 8], eax         ; Write lower 32-bits (address + flags)
-	mov dword [pt_table + ecx * 8 + 4], 0 ; Explicitly zero out upper 32-bits
-
-	inc ecx
-	cmp ecx, 512        ; Have we filled all 512 entries?
-	jne .map_pt_loop
-	ret
-
-
-; --- 64-Bit Mode Code Execution Section ---
 bits 64
 start_64bit:
-	; Reload data registers with your 64-bit Data Segment index (0x20)
-	mov ax, 0x20
-	mov ds, ax
-	mov es, ax
-	mov fs, ax
-	mov gs, ax
-	mov ss, ax
+    mov ax, GDT_SEL_DATA64
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    ; SysV ABI: stack_top is 16-byte aligned; call establishes callee entry ABI.
+    mov edi, [rel mb2_handoff_magic]
+    mov esi, [rel mb2_handoff_info]
+    call kernel_main
+.hang:
+    cli
+    hlt
+    jmp .hang
 
-	; Jump to C/C++ 64-bit kernel main function
-	call kernel_main
-
-.hang_64:
-	hlt
-	jmp .hang_64
-
-
+; Single bootstrap GDT remains valid in both modes. L=1 and D/B=0 for code64.
 align 8
 gdt:
-	; 0x00 - Null Descriptor
-	dq 0x0000000000000000
-
-	; 0x08 - 32-Bit code segment descriptor
-	dw 0xffff     
-	dw 0          
-	db 0          
-	db 0x9a       
-	db 11001111b  
-	db 0          
-
-	; 0x10 - 32 bit Data Segment Descriptor
-	dw 0xffff     
-	dw 0          
-	db 0          
-	db 0x92       
-	db 11001111b  
-	db 0          
-
-	; 0x18 - 64 bit code segment descriptor
-	dw 0x0000     
-	dw 0x0000     
-	db 0x00       
-	db 0x9A       
-	db 0x20       ; Long mode flag active
-	db 0x00       
-
-	; 0x20 - 64 bit data segment descriptor
-	dw 0x0000     
-	dw 0x0000     
-	db 0x00       
-	db 0x92       
-	db 0x00       
-	db 0x00       
-
+    dq 0x0000000000000000
+    dq 0x00CF9A000000FFFF         ; 0x08 ring-0 32-bit code, 4 KiB granularity
+    dq 0x00CF92000000FFFF         ; 0x10 ring-0 data, writable
+    dq 0x00AF9A000000FFFF         ; 0x18 ring-0 64-bit code (L=1, D=0)
+    dq 0x00CF92000000FFFF         ; 0x20 ring-0 data
 gdt_end:
-
 gdt_descriptor:
-	dw gdt_end - gdt - 1 
-	dq gdt               
+    dw gdt_end - gdt - 1
+    dd gdt
 
 section .bss
-align 8
-multiboot_magic:
-	resd 1
-multiboot_info:
-	resd 1
+alignb 8
+mb2_handoff_magic: resd 1
+mb2_handoff_info:  resd 1
 alignb 4096
-pml4_table:
-	resb 4096
-pdpt_table:
-	resb 4096
-pd_table:
-	resb 4096
-pt_table:
-	resb 4096
-
+pml4_table: resb 4096
+pdpt_table: resb 4096
+pd0_table:  resb 4096
+pd1_table:  resb 4096
+pd2_table:  resb 4096
+pd3_table:  resb 4096
 alignb 16
-stack_bottom:
-	resb STACK_SIZE
+stack_bottom: resb STACK_SIZE
 stack_top:

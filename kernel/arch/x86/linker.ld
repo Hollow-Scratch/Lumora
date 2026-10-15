@@ -6,12 +6,11 @@ OUTPUT_ARCH(i386:x86-64)
 
 SECTIONS
 {
-    /* Multiboot kernels usually start at the 1MB physical memory mark */
+    /* Keep the Multiboot 2 header inside its first-32-KiB search window. */
     . = 0x100000;
 
+    .multiboot2 : ALIGN(8) { KEEP(*(.multiboot2)) }
     .text : {
-       
-        KEEP(*(.multiboot))
         *(.text32)
         *(.text)
 
@@ -31,4 +30,6 @@ SECTIONS
         *(.bss)
         *(COMMON)
     }
+
+    /DISCARD/ : { *(.note.GNU-stack) }
 }
