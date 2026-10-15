@@ -1,5 +1,6 @@
 #include "IDT.hpp"
 #include "../GDT.hpp"
+#include "../../../Core/Panic.hpp"
 
 namespace Lumora::Arch::x86 {
 
@@ -9,7 +10,7 @@ static IDTPointer idt_pointer{};
 extern "C" {
     extern void* isr_stub_table[32];
     extern void isr_default();
-    void interrupt_dispatch(InterruptFrame* frame);
+    [[noreturn]] void interrupt_dispatch(InterruptFrame* frame);
 }
 
 static void SetGate(uint8_t vector, void (*handler)()) {
@@ -38,16 +39,13 @@ void InitIDT() {
     IDTPointer actual{};
     asm volatile("sidt %0" : "=m"(actual) : : "memory");
     if (actual.base != idt_pointer.base || actual.limit != idt_pointer.limit) {
-        volatile auto* screen = reinterpret_cast<volatile uint16_t*>(0xB8000);
-        const char* message = "IDTR VERIFY FAILED - HALTING";
-        for (unsigned i = 0; message[i]; ++i)
-            screen[i] = static_cast<uint16_t>(0x4F00 | message[i]);
-        asm volatile("cli");
-        for (;;) asm volatile("hlt");
+        Lumora::Core::Panic(Lumora::Core::PanicReason::KernelInvariantViolation,
+                    "IDTR readback did not match the installed table",
+                    __FILE__, __LINE__);
     }
 }
 
-static const char* ExceptionName(uint64_t vector) {
+static const char* ExceptionName(uint64_t vector) noexcept {
     static const char* const names[32] = {
         "Divide Error", "Debug", "NMI", "Breakpoint", "Overflow",
         "BOUND Range", "Invalid Opcode", "Device Not Available",
@@ -62,46 +60,17 @@ static const char* ExceptionName(uint64_t vector) {
     return vector < 32 ? names[vector] : "Unknown interrupt";
 }
 
-static void WriteText(unsigned row, const char* text) {
-    volatile auto* screen = reinterpret_cast<volatile uint16_t*>(0xB8000);
-    unsigned column = 0;
-    while (text[column] && column < 80) {
-        screen[row * 80 + column] = static_cast<uint16_t>(0x0F00 | text[column]);
-        ++column;
-    }
-}
-
-static void WriteHex(unsigned row, unsigned column, uint64_t value) {
-    static const char digits[] = "0123456789ABCDEF";
-    volatile auto* screen = reinterpret_cast<volatile uint16_t*>(0xB8000);
-    for (unsigned i = 0; i < 16; ++i) {
-        const unsigned shift = (15 - i) * 4;
-        screen[row * 80 + column + i] =
-            static_cast<uint16_t>(0x0F00 | digits[(value >> shift) & 0xF]);
-    }
-}
-
-extern "C" void interrupt_dispatch(InterruptFrame* frame) {
+extern "C" [[noreturn]] void interrupt_dispatch(InterruptFrame* frame) {
     const uint64_t vector = frame->vector;
-    const bool is_exception = vector < 32;
     const bool has_error = vector == 8 || (vector >= 10 && vector <= 14) ||
         vector == 17 || vector == 21 || vector == 29 || vector == 30;
-
-    asm volatile("cli" ::: "memory");
-    WriteText(0, "LUMORA FATAL EXCEPTION - CPU HALTED");
-    WriteText(1, is_exception ? ExceptionName(vector) : "Unexpected interrupt");
-    WriteText(2, "VECTOR:"); WriteHex(2, 8, vector);
-    WriteText(3, "ERROR CODE:");
-    if (has_error) WriteHex(3, 12, frame->error_code);
-    else {
-        const char* text = "not pushed by CPU";
-        volatile auto* screen = reinterpret_cast<volatile uint16_t*>(0xB8000);
-        for (unsigned i = 0; text[i]; ++i)
-            screen[3 * 80 + 12 + i] = static_cast<uint16_t>(0x0F00 | text[i]);
-    }
-    WriteText(4, "SAVED RIP:"); WriteHex(4, 12, frame->rip);
-    WriteText(5, "HALTING: YES");
-    for (;;) asm volatile("hlt");
+    const Lumora::Core::PanicContext context{
+        true, has_error, vector, frame->error_code, frame->rip,
+        ExceptionName(vector), &frame->r15
+    };
+    Lumora::Core::Panic(Lumora::Core::PanicReason::CPUException,
+                vector < 32 ? "Fatal processor exception" : "Unexpected interrupt; IRQ handling is not initialized",
+                __FILE__, __LINE__, &context);
 }
 
 } // namespace Lumora::Arch::x86

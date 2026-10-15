@@ -67,3 +67,7 @@ vcpkg_installed/
 Testing/
 .cache/
 docs/
+
+*.bin
+*.iso
+*.o

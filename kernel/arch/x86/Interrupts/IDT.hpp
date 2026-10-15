@@ -22,7 +22,7 @@ struct [[gnu::packed]] IDTPointer  {
 
 // At entry to interrupt_dispatch: registers are in this order, followed by
 // vector, normalized error code, and the CPU's RIP/CS/RFLAGS frame.
-struct [[gnu::packed]] InterruptFrame {
+struct InterruptFrame {
     uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
     uint64_t rdi, rsi, rbp, rdx, rcx, rbx, rax;
     uint64_t vector;
