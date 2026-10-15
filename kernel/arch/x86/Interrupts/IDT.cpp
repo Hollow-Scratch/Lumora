@@ -1,4 +1,5 @@
 #include "IDT.hpp"
+#include "../GDT.hpp"
 
 namespace Lumora::Arch::x86 {
 
@@ -8,8 +9,6 @@ static IDTPointer idt_pointer{};
 extern "C" {
     extern void* isr_stub_table[32];
     extern void isr_default();
-    extern uint32_t multiboot_magic;
-    extern uint32_t multiboot_info;
     void interrupt_dispatch(InterruptFrame* frame);
 }
 
@@ -17,7 +16,7 @@ static void SetGate(uint8_t vector, void (*handler)()) {
     const uint64_t address = reinterpret_cast<uint64_t>(handler);
     IDTEntry& entry = idt[vector];
     entry.offset_1 = static_cast<uint16_t>(address);
-    entry.selector = 0x18; // GDT long-mode kernel code selector.
+    entry.selector = GDT::KernelCode64;
     entry.ist = 0;
     entry.type_attributes = 0x8E; // Present, DPL 0, 64-bit interrupt gate.
     entry.offset_2 = static_cast<uint16_t>(address >> 16);
