@@ -139,6 +139,11 @@ alignb 8
 mb2_handoff_magic: resd 1
 mb2_handoff_info:  resd 1
 alignb 4096
+global pml4_table
+global pd0_table
+global pd1_table
+global pd2_table
+global pd3_table
 pml4_table: resb 4096
 pdpt_table: resb 4096
 pd0_table:  resb 4096
