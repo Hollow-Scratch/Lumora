@@ -14,6 +14,7 @@ SECTIONS
         KEEP(*(.multiboot))
         *(.text32)
         *(.text)
+
     }
 
     /* Align sections to 4KB boundaries */

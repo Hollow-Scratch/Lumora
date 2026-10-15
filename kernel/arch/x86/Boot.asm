@@ -13,9 +13,15 @@ section .text32
 bits 32
 global start
 extern kernel_main
+global multiboot_magic
+global multiboot_info
 
 start:
 	cli
+	cld
+	; Preserve the Multiboot 1 handoff values before using EAX/EBX.
+	mov [multiboot_magic], eax
+	mov [multiboot_info], ebx
 	mov esp, stack_top
 
 	; 1. Load clean 32-bit GDT layout into the CPU
@@ -167,7 +173,12 @@ gdt_descriptor:
 	dq gdt               
 
 section .bss
-align 4096
+align 8
+multiboot_magic:
+	resd 1
+multiboot_info:
+	resd 1
+alignb 4096
 pml4_table:
 	resb 4096
 pdpt_table:
@@ -177,7 +188,7 @@ pd_table:
 pt_table:
 	resb 4096
 
-align 16
+alignb 16
 stack_bottom:
 	resb STACK_SIZE
 stack_top:
