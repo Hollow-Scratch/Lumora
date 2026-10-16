@@ -40,5 +40,9 @@ static_assert(offsetof(InterruptFrame, error_code) == 16 * sizeof(uint64_t));
 static_assert(offsetof(InterruptFrame, rip) == 17 * sizeof(uint64_t));
 
 void InitIDT();
+using IRQHandler = void (*)(uint8_t irq, InterruptFrame* frame);
+// Registration marks a handler ready and unmasks its PIC line. IRQs remain
+// masked until this call succeeds; callers must register with IF clear.
+bool RegisterIRQHandler(uint8_t irq, IRQHandler handler) noexcept;
 
 }

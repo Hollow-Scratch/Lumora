@@ -6,6 +6,7 @@ section .text
 extern interrupt_dispatch
 global isr_default
 global isr_stub_table
+global irq_stub_table
 
 ; Common entry point.
 ; Keep this label defined before the generated stubs.
@@ -111,6 +112,20 @@ ISR_ERROR    29
 ISR_ERROR    30
 ISR_NO_ERROR 31
 
+%macro ISR_IRQ 1
+global irq_%1
+irq_%1:
+    push qword 0
+    push qword (32 + %1)
+    jmp isr_common
+%endmacro
+
+%assign irq 0
+%rep 16
+ISR_IRQ irq
+%assign irq irq+1
+%endrep
+
 ; Fallback for vectors without a dedicated stub.
 isr_default:
     push qword 0
@@ -129,3 +144,11 @@ isr_stub_table:
     dq isr_20, isr_21, isr_22, isr_23
     dq isr_24, isr_25, isr_26, isr_27
     dq isr_28, isr_29, isr_30, isr_31
+
+align 8
+irq_stub_table:
+%assign irq 0
+%rep 16
+    dq irq_%+irq
+%assign irq irq+1
+%endrep

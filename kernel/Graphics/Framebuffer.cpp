@@ -85,10 +85,7 @@ void Framebuffer::StorePixel(uint32_t x, uint32_t y, uint32_t packed) noexcept {
 
 void Framebuffer::Clear(Color color) noexcept {
     if (!IsReady()) return;
-    const uint32_t packed = PackColor(info_, color);
-    for (uint32_t y = 0; y < info_.height; ++y)
-        for (uint32_t x = 0; x < info_.width; ++x)
-            StorePixel(x, y, packed);
+    FillRect(0, 0, info_.width, info_.height, color);
 }
 
 void Framebuffer::DrawPixel(int64_t x, int64_t y, Color color) noexcept {
@@ -109,9 +106,34 @@ void Framebuffer::FillRect(int64_t x, int64_t y, int64_t width, int64_t height,
     const int64_t y1 = end_y > info_.height ? info_.height : end_y;
     if (x0 >= x1 || y0 >= y1) return;
     const uint32_t packed = PackColor(info_, color);
-    for (int64_t row = y0; row < y1; ++row)
-        for (int64_t column = x0; column < x1; ++column)
-            StorePixel(static_cast<uint32_t>(column), static_cast<uint32_t>(row), packed);
+    const size_t pixel_bytes = bytes_per_pixel_;
+    const size_t span_bytes = static_cast<size_t>(x1 - x0) * pixel_bytes;
+    const size_t first_column = static_cast<size_t>(x0) * pixel_bytes;
+    uint8_t pixel[4]{};
+    for (size_t byte = 0; byte < pixel_bytes; ++byte)
+        pixel[byte] = static_cast<uint8_t>(packed >> (byte * 8));
+
+    for (int64_t row = y0; row < y1; ++row) {
+        const size_t offset = static_cast<size_t>(row) * info_.pitch + first_column;
+        if (offset > mapped_bytes_ || span_bytes > mapped_bytes_ - offset) return;
+        volatile uint8_t* destination = pixels_ + offset;
+        size_t remaining = span_bytes;
+        if (pixel_bytes == 4 &&
+            (reinterpret_cast<uintptr_t>(destination) & (alignof(uint32_t) - 1)) == 0) {
+            const uint32_t value = packed;
+            auto* words = reinterpret_cast<volatile uint32_t*>(destination);
+            while (remaining >= sizeof(value)) {
+                *words++ = value;
+                remaining -= sizeof(value);
+            }
+            destination = reinterpret_cast<volatile uint8_t*>(words);
+        }
+        size_t phase = (span_bytes - remaining) % pixel_bytes;
+        while (remaining--) {
+            *destination++ = pixel[phase++];
+            if (phase == pixel_bytes) phase = 0;
+        }
+    }
 }
 
 void Framebuffer::DrawHorizontalLine(int64_t x, int64_t y, int64_t length,
@@ -130,11 +152,17 @@ void Framebuffer::DrawCharacter(int64_t x, int64_t y, char c, Color color,
     uint8_t rows[7];
     Font::GlyphRows(c, rows);
     for (uint8_t row = 0; row < 7; ++row) {
-        for (uint8_t column = 0; column < 5; ++column) {
-            if (rows[row] & (1u << (4 - column)))
-                FillRect(SaturatingAdd(x, static_cast<int64_t>(column) * scale),
+        uint8_t column = 0;
+        while (column < 5) {
+            while (column < 5 && !(rows[row] & (1u << (4 - column)))) ++column;
+            const uint8_t first = column;
+            while (column < 5 && (rows[row] & (1u << (4 - column)))) ++column;
+            if (column > first) {
+                FillRect(SaturatingAdd(x, static_cast<int64_t>(first) * scale),
                          SaturatingAdd(y, static_cast<int64_t>(row) * scale),
-                         scale, scale, color);
+                         static_cast<int64_t>(column - first) * scale,
+                         scale, color);
+            }
         }
     }
 }
