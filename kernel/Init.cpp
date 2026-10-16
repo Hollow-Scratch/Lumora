@@ -1,7 +1,11 @@
 #include <stdint.h>
 
+#include "Core/Log.hpp"
 #include "Core/Panic.hpp"
+#include "Console/BootScreen.hpp"
+#include "Console/Terminal.hpp"
 #include "Graphics/Framebuffer.hpp"
+#include "Version.hpp"
 #include "arch/x86/BootInfo.hpp"
 #include "arch/x86/Framebuffer.hpp"
 #include "arch/x86/Interrupts/IDT.hpp"
@@ -9,59 +13,9 @@
 #include "Driver/Input/PS2Keyboard/PS2Keyboard.hpp"
 
 namespace {
-using Lumora::Graphics::Color;
-void RenderBootScreen(const Lumora::Arch::x86::BootInfo& info) noexcept {
-    auto& fb = Lumora::Graphics::Console();
-    constexpr Color background{20, 18, 31};
-    constexpr Color foreground{236, 231, 246};
-    constexpr Color accent{192, 150, 255};
-    fb.Clear(background);
-    fb.DrawString(24, 24, "LUMORA OS", accent, fb.Width() >= 600 ? 2 : 1);
-    fb.DrawString(24, 68, "MULTIBOOT 2 BOOT COMPLETE", foreground);
-    fb.DrawString(24, 88, info.has_bootloader ? info.bootloader : "BOOTLOADER: UNAVAILABLE", foreground);
-    fb.DrawString(24, 108, "MEMORY MAP ENTRIES:", accent);
-    fb.DrawDecimal(150, 108, info.memory_count, foreground);
-
-    // Simple, deliberate color/pitch pattern to exercise the renderer.
-    const int64_t bar_y = 145;
-    const int64_t bar_width = fb.Width() > 180 ? 48 : fb.Width() / 4;
-    fb.FillRect(24, bar_y, bar_width, 12, {255, 0, 0});
-    fb.FillRect(24 + bar_width + 8, bar_y, bar_width, 12, {0, 255, 0});
-    fb.FillRect(24 + (bar_width + 8) * 2, bar_y, bar_width, 12, {0, 0, 255});
-    fb.DrawString(24, bar_y + 20, "FRAMEBUFFER RGB TEST PATTERN", foreground);
-    fb.DrawHorizontalLine(24, bar_y + 42, static_cast<int64_t>(fb.Width()) - 48, accent);
-}
-
-void DrawKeyboardPrompt() noexcept {
-    using Lumora::Graphics::Color;
-    auto& fb = Lumora::Graphics::Console();
-    constexpr Color text{236, 231, 246};
-    fb.DrawString(24, 210, "KEYBOARD: TYPE TEXT; ENTER NEW LINE", text);
-}
-
-void EchoKey(const Lumora::Driver::Input::PS2Keyboard::KeyEvent& event,
-             int64_t& x, int64_t& y) noexcept {
-    using Lumora::Graphics::Color;
-    constexpr Color foreground{236, 231, 246};
-    constexpr Color background{20, 18, 31};
-    auto& fb = Lumora::Graphics::Console();
-    if (!event.pressed) return;
-    if (event.key == Lumora::Driver::Input::PS2Keyboard::KeyCode::Enter) {
-        x = 24;
-        y += 10;
-        if (y + 8 >= fb.Height()) y = 230;
-        return;
-    }
-    if (event.key == Lumora::Driver::Input::PS2Keyboard::KeyCode::Backspace && x > 24) {
-        x -= 6;
-        fb.FillRect(x, y - 1, 6, 9, background);
-        return;
-    }
-    if (event.character >= 32 && event.character <= 126) {
-        fb.DrawCharacter(x, y, event.character, foreground);
-        x += 6;
-        if (x + 6 >= fb.Width()) { x = 24; y += 10; }
-    }
+[[noreturn]] void Fail(Lumora::Core::PanicReason reason, const char* message) noexcept {
+    Lumora::Core::Log::Error(message);
+    Lumora::Core::Panic(reason, message, __FILE__, __LINE__);
 }
 
 #if defined(LUMORA_TEST_KEYBOARD)
@@ -99,26 +53,32 @@ void LogKeyboardEvent(const Lumora::Driver::Input::PS2Keyboard::KeyEvent& event)
 
 extern "C" void kernel_main(uint32_t magic, uint32_t information_address) {
     asm volatile("cli" ::: "memory");
-
-    // Install the exception path before parsing or touching externally supplied
-    // metadata. Until graphics comes up, Panic reports through serial and halts.
+    Lumora::Core::Log::Info("Lumora kernel starting");
+    Lumora::Core::Log::Info(Lumora::KernelVersion);
     Lumora::Arch::x86::InitIDT();
+    Lumora::Core::Log::Info("[OK] GDT active; IDT installed and verified");
 
+    Lumora::Core::Log::Info("Parsing Multiboot 2 handoff");
     const Lumora::Arch::x86::BootHandoff handoff{magic, information_address};
     Lumora::Arch::x86::BootInfo boot_info{};
     if (!Lumora::Arch::x86::ParseBootInfo(handoff, boot_info))
-        LUMORA_PANIC(Lumora::Core::PanicReason::InvalidBootInfo,
-                     "Multiboot 2 handoff or information tags are invalid");
+        Fail(Lumora::Core::PanicReason::InvalidBootInfo,
+             "[FAIL] Multiboot 2 handoff or information tags are invalid");
+    Lumora::Core::Log::Info("[OK] Multiboot 2 information parsed");
+    if (boot_info.memory_count)
+        Lumora::Core::Log::Info("[OK] Memory map entries parsed");
+    else
+        Lumora::Core::Log::Warning("No Multiboot memory map entries were provided");
     if (!boot_info.has_framebuffer || boot_info.framebuffer.type != 1 ||
         !boot_info.framebuffer.has_rgb_fields)
-        LUMORA_PANIC(Lumora::Core::PanicReason::FramebufferUnavailable,
-                     "No supported direct-RGB framebuffer tag was supplied");
+        Fail(Lumora::Core::PanicReason::FramebufferUnavailable,
+             "[FAIL] No supported direct-RGB framebuffer tag was supplied");
 
+    Lumora::Core::Log::Info("Mapping Multiboot framebuffer");
     Lumora::Arch::x86::FramebufferMapping mapping{};
     if (!Lumora::Arch::x86::MapFramebuffer(boot_info.framebuffer, mapping))
-        LUMORA_PANIC(Lumora::Core::PanicReason::FramebufferUnavailable,
-                     "Framebuffer range could not be mapped safely");
-
+        Fail(Lumora::Core::PanicReason::FramebufferUnavailable,
+             "[FAIL] Framebuffer range could not be mapped safely");
     const auto& source = boot_info.framebuffer;
     const Lumora::Graphics::FramebufferInfo format{
         source.width, source.height, source.pitch, source.bits_per_pixel,
@@ -126,30 +86,38 @@ extern "C" void kernel_main(uint32_t magic, uint32_t information_address) {
         source.green_position, source.green_mask_size,
         source.blue_position, source.blue_mask_size
     };
-    auto& framebuffer = Lumora::Graphics::Console();
-    if (!framebuffer.Initialize(mapping.address, mapping.length, format))
-        LUMORA_PANIC(Lumora::Core::PanicReason::FramebufferUnavailable,
-                     "Framebuffer format, pitch, or channel masks are unsupported");
+    if (!Lumora::Graphics::Console().Initialize(mapping.address, mapping.length, format))
+        Fail(Lumora::Core::PanicReason::FramebufferUnavailable,
+             "[FAIL] Framebuffer format, pitch, or channel masks are unsupported");
 
-    RenderBootScreen(boot_info);
+    Lumora::Console::BootScreen::Initialize();
+    Lumora::Core::Log::Info("[OK] Linear framebuffer initialized");
+    Lumora::Core::Log::Info("[OK] Framebuffer console attached; early boot log replayed");
 
-    // Input setup runs only after framebuffer diagnostics are available. PIC
-    // remains fully masked until the keyboard driver registers IRQ1's handler.
     Lumora::Driver::InterruptController::PIC8259::Initialize();
-    const auto keyboard_result = Lumora::Driver::Input::PS2Keyboard::Initialize();
-    if (keyboard_result == Lumora::Driver::Input::PS2Keyboard::InitResult::Ready)
-        DrawKeyboardPrompt();
-    else {
-        static constexpr const char* failures[] = {
-            "READY", "PS/2 CONTROLLER TIMEOUT", "NO PS/2 CONTROLLER",
-            "KEYBOARD INTERFACE UNAVAILABLE", "KEYBOARD DID NOT RESPOND",
-            "KEYBOARD REJECTED SCANCODE CONFIG", "IRQ1 REGISTRATION FAILED"
-        };
-        const auto index = static_cast<unsigned>(keyboard_result);
-        Lumora::Graphics::Console().DrawString(24, 210,
-            index < sizeof(failures) / sizeof(failures[0]) ? failures[index] : "KEYBOARD INIT FAILED",
-            {255, 150, 150});
+    Lumora::Core::Log::Info("[OK] PIC8259 initialized with all IRQ lines masked");
+    const auto keyboard = Lumora::Driver::Input::PS2Keyboard::Initialize();
+    if (keyboard != Lumora::Driver::Input::PS2Keyboard::InitResult::Ready) {
+        const char* reason = "[FAIL] PS/2 keyboard initialization failed";
+        switch (keyboard) {
+        case Lumora::Driver::Input::PS2Keyboard::InitResult::ControllerTimeout:
+            reason = "[FAIL] PS/2 controller timed out"; break;
+        case Lumora::Driver::Input::PS2Keyboard::InitResult::NoController:
+            reason = "[FAIL] No usable PS/2 controller detected"; break;
+        case Lumora::Driver::Input::PS2Keyboard::InitResult::InterfaceUnavailable:
+            reason = "[FAIL] PS/2 keyboard interface unavailable"; break;
+        case Lumora::Driver::Input::PS2Keyboard::InitResult::DeviceNoResponse:
+            reason = "[FAIL] PS/2 keyboard did not acknowledge commands"; break;
+        case Lumora::Driver::Input::PS2Keyboard::InitResult::DeviceRejectedCommand:
+            reason = "[FAIL] PS/2 keyboard rejected scancode setup"; break;
+        case Lumora::Driver::Input::PS2Keyboard::InitResult::IRQRegistrationFailed:
+            reason = "[FAIL] Could not register the keyboard IRQ1 handler"; break;
+        case Lumora::Driver::Input::PS2Keyboard::InitResult::Ready: break;
+        }
+        Fail(Lumora::Core::PanicReason::KernelInvariantViolation, reason);
     }
+    Lumora::Core::Log::Info("[OK] PS/2 keyboard ready; IRQ1 handler registered and enabled");
+    Lumora::Core::Log::Info("Initialization complete. Switching to interactive console.");
 
 #if defined(LUMORA_TEST_PANIC)
     LUMORA_PANIC(Lumora::Core::PanicReason::KernelInvariantViolation,
@@ -164,24 +132,20 @@ extern "C" void kernel_main(uint32_t magic, uint32_t information_address) {
     asm volatile("mov $0x28, %%ax; mov %%ax, %%ds" ::: "rax", "memory");
 #endif
 
-    if (keyboard_result == Lumora::Driver::Input::PS2Keyboard::InitResult::Ready) {
-        int64_t cursor_x = 24, cursor_y = 230;
-        for (;;) {
-            asm volatile("cli" ::: "memory");
-            Lumora::Driver::Input::PS2Keyboard::KeyEvent event{};
-            const bool has_event = Lumora::Driver::Input::PS2Keyboard::ReadEvent(event);
-            if (!has_event) {
-                // STI's one-instruction interrupt shadow makes HLT race-free:
-                // a queued IRQ cannot be missed between the empty check and sleep.
-                asm volatile("sti; hlt" ::: "memory");
-                continue;
-            }
-            asm volatile("sti" ::: "memory");
-#if defined(LUMORA_TEST_KEYBOARD)
-            LogKeyboardEvent(event);
-#endif
-            EchoKey(event, cursor_x, cursor_y);
+    Lumora::Console::Terminal::Initialize();
+    for (;;) {
+        // The interrupt gate runs with IF clear. Consume events with IF clear,
+        // then use the STI shadow on HLT to avoid losing an IRQ between poll/sleep.
+        asm volatile("cli" ::: "memory");
+        Lumora::Driver::Input::PS2Keyboard::KeyEvent event{};
+        if (!Lumora::Driver::Input::PS2Keyboard::ReadEvent(event)) {
+            asm volatile("sti; hlt" ::: "memory");
+            continue;
         }
+        asm volatile("sti" ::: "memory");
+#if defined(LUMORA_TEST_KEYBOARD)
+        LogKeyboardEvent(event);
+#endif
+        Lumora::Console::Terminal::Handle(event);
     }
-    for (;;) asm volatile("cli; hlt" ::: "memory");
 }

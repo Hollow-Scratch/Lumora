@@ -13,6 +13,7 @@ constexpr uint8_t CmdDisableKeyboard = 0xAD, CmdEnableKeyboard = 0xAE;
 constexpr uint8_t CmdSelfTest = 0xAA, CmdInterfaceTest = 0xAB;
 constexpr uint8_t ConfigIRQ1 = 1u << 0, ConfigTranslation = 1u << 6, ConfigClockDisabled = 1u << 4;
 constexpr uint8_t DeviceDisableScanning = 0xF5, DeviceSetScancodeSet = 0xF0;
+constexpr uint8_t DeviceSetLeds = 0xED;
 constexpr uint8_t DeviceEnableScanning = 0xF4, DeviceAck = 0xFA, DeviceResend = 0xFE;
 ByteQueue raw_bytes;
 ScancodeDecoder decoder;
@@ -65,26 +66,52 @@ bool ControllerData(uint8_t value) noexcept {
 bool DeviceCommand(uint8_t command) noexcept {
     for (uint8_t attempt = 0; attempt < 3; ++attempt) {
         if (!ControllerData(command)) return false;
-        uint8_t status, response;
-        if (!WaitOutputFull(status)) return false;
-        response = In8(DataPort);
-        if (status & (StatusAuxiliary | StatusTimeout | StatusParity)) return false;
-        if (response == DeviceAck) return true;
-        if (response != DeviceResend) return false;
+        bool retry = false;
+        for (uint32_t poll = 0; poll < PollLimit; ++poll) {
+            const uint8_t status = In8(StatusCommandPort);
+            if ((status & StatusOutputFull) == 0) { asm volatile("pause"); continue; }
+            if (status & StatusAuxiliary) return false;
+            const uint8_t response = In8(DataPort);
+            if (status & (StatusTimeout | StatusParity)) return false;
+            if (response == DeviceAck) return true;
+            if (response == DeviceResend) { retry = true; break; }
+            (void)raw_bytes.Push(response); // Preserve scan bytes preceding the ACK.
+        }
+        if (!retry) return false;
     }
     return false;
 }
 bool DeviceData(uint8_t value) noexcept {
     for (uint8_t attempt = 0; attempt < 3; ++attempt) {
         if (!ControllerData(value)) return false;
-        uint8_t status;
-        if (!WaitOutputFull(status)) return false;
-        const uint8_t response = In8(DataPort);
-        if (status & (StatusAuxiliary | StatusTimeout | StatusParity)) return false;
-        if (response == DeviceAck) return true;
-        if (response != DeviceResend) return false;
+        bool retry = false;
+        for (uint32_t poll = 0; poll < PollLimit; ++poll) {
+            const uint8_t status = In8(StatusCommandPort);
+            if ((status & StatusOutputFull) == 0) { asm volatile("pause"); continue; }
+            if (status & StatusAuxiliary) return false;
+            const uint8_t response = In8(DataPort);
+            if (status & (StatusTimeout | StatusParity)) return false;
+            if (response == DeviceAck) return true;
+            if (response == DeviceResend) { retry = true; break; }
+            (void)raw_bytes.Push(response);
+        }
+        if (!retry) return false;
     }
     return false;
+}
+void UpdateLeds(const KeyEvent& event) noexcept {
+    uint64_t flags;
+    asm volatile("pushfq; popq %0; cli" : "=r"(flags) : : "memory");
+    uint8_t mask = 0;
+    if (event.scroll_lock) mask |= 1u << 0;
+    if (event.num_lock) mask |= 1u << 1;
+    if (event.caps_lock) mask |= 1u << 2;
+    if (DeviceCommand(DeviceDisableScanning)) {
+        const bool updated = DeviceCommand(DeviceSetLeds) && DeviceData(mask);
+        (void)updated;
+        (void)DeviceCommand(DeviceEnableScanning);
+    }
+    if (flags & (1u << 9)) asm volatile("sti" ::: "memory");
 }
 void KeyboardIRQ(uint8_t, Lumora::Arch::x86::InterruptFrame*) {
     const uint8_t status = In8(StatusCommandPort);
@@ -115,6 +142,7 @@ InitResult Initialize() noexcept {
     if (!DeviceCommand(DeviceDisableScanning)) return InitResult::DeviceNoResponse;
     if (!DeviceCommand(DeviceSetScancodeSet)) return InitResult::DeviceRejectedCommand;
     if (!DeviceData(0x02)) return InitResult::DeviceRejectedCommand;
+    if (!DeviceCommand(DeviceSetLeds) || !DeviceData(0)) return InitResult::DeviceRejectedCommand;
     // Translation is enabled, so set 2 reaches the kernel as set 1.
     // All handler state is ready before registration unsets the PIC mask.
     ready = true;
@@ -136,7 +164,15 @@ InitResult Initialize() noexcept {
 bool ReadEvent(KeyEvent& event) noexcept {
     if (!ready) return false;
     uint8_t byte;
-    while (raw_bytes.Pop(byte)) if (decoder.Feed(byte, event)) return true;
+    while (raw_bytes.Pop(byte)) {
+        if (decoder.Feed(byte, event)) {
+            event.character = USCharacter(event);
+            if (event.pressed && (event.key == KeyCode::CapsLock ||
+                event.key == KeyCode::NumLock || event.key == KeyCode::ScrollLock))
+                UpdateLeds(event);
+            return true;
+        }
+    }
     return false;
 }
 uint32_t DroppedBytes() noexcept { return raw_bytes.DroppedBytes(); }
