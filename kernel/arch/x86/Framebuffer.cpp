@@ -17,11 +17,16 @@ constexpr uint64_t PageSize = 4096;
 constexpr uint64_t HugePageSize = 0x200000;
 constexpr size_t PageTableCount = 32;                      // 64 MiB virtual window
 constexpr uint64_t AddressMask = 0x000FFFFFFFFFF000ull;
+constexpr uint32_t Ia32Pat = 0x277;
+constexpr uint64_t PatWriteCombiningEntry = 1ull << 32; // PAT entry 4 = WC
+constexpr uint64_t PatIndexFlags = 0x18;                // PWT + PCD selects entry 3
 
 alignas(4096) uint64_t framebuffer_pdpt[512]{};
 alignas(4096) uint64_t framebuffer_pd[512]{};
 alignas(4096) uint64_t framebuffer_pts[PageTableCount][512]{};
 bool mapped_once = false;
+bool pat_wc_ready = false;
+bool pat_wc_checked = false;
 
 uint64_t* DirectoryFor(uint64_t physical) noexcept {
     const uint64_t index = physical / HugePageSize;
@@ -35,6 +40,44 @@ void FlushTlb() noexcept {
     uint64_t cr3;
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
     asm volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
+}
+
+uint64_t ReadMsr(uint32_t msr) noexcept {
+    uint32_t low, high;
+    asm volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr));
+    return (static_cast<uint64_t>(high) << 32) | low;
+}
+
+bool ConfigureWriteCombining() noexcept {
+    if (pat_wc_checked) return pat_wc_ready;
+    pat_wc_checked = true;
+    uint32_t eax = 1, ebx, ecx, edx;
+    asm volatile("cpuid" : "+a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx));
+    (void)ebx;
+    (void)ecx;
+    if (!(edx & (1u << 16))) return false; // CPUID.1:EDX.PAT
+
+    uint64_t pat = ReadMsr(Ia32Pat);
+    // Index 3 is the scalar UC fallback selected by PWT+PCD; index 4 is WC.
+    pat = (pat & ~((0xFFull << 24) | (0xFFull << 32))) |
+          PatWriteCombiningEntry;
+    // No framebuffer writes have occurred yet. Flush before and after changing
+    // PAT so no cached line survives a memory-type transition.
+    asm volatile("wbinvd" ::: "memory");
+    asm volatile("wrmsr" : : "c"(Ia32Pat), "a"(static_cast<uint32_t>(pat)),
+                  "d"(static_cast<uint32_t>(pat >> 32)) : "memory");
+    asm volatile("wbinvd" ::: "memory");
+    FlushTlb();
+    pat_wc_ready = ReadMsr(Ia32Pat) == pat;
+    return pat_wc_ready;
+}
+
+void SetLargePageType(uint64_t& entry, bool write_combining) noexcept {
+    if (write_combining) {
+        entry = (entry & ~PatIndexFlags) | (1ull << 12); // large-page PAT bit
+    } else {
+        entry = (entry & ~(1ull << 12)) | PatIndexFlags;
+    }
 }
 }
 
@@ -57,9 +100,10 @@ bool MapFramebuffer(const Framebuffer& f, FramebufferMapping& out) noexcept {
             const unsigned entry = static_cast<unsigned>(index & 511);
             if ((directory[entry] & 0x83) != 0x83) return false;
         }
+        const bool wc = ConfigureWriteCombining();
         for (uint64_t index = first; index <= last; ++index) {
             uint64_t* directory = DirectoryFor(index * HugePageSize);
-            directory[index & 511] |= 0x18; // PWT + PCD for framebuffer/MMIO caching
+            SetLargePageType(directory[index & 511], wc);
         }
         FlushTlb();
         out.address = reinterpret_cast<volatile uint8_t*>(f.address);
@@ -77,7 +121,7 @@ bool MapFramebuffer(const Framebuffer& f, FramebufferMapping& out) noexcept {
     if (pt_count > PageTableCount || pt_count > 32) return false;
 
     // If a boundary-crossing range aliases the pre-existing low identity map,
-    // make that large-page alias uncacheable as well.
+    // give that alias the same PAT/MTRR-selected type as the high window.
     if (physical_start < FourGiB) {
         const uint64_t low_last = ((f.address + length - 1) < FourGiB)
             ? ((f.address + length - 1) / HugePageSize)
@@ -85,7 +129,19 @@ bool MapFramebuffer(const Framebuffer& f, FramebufferMapping& out) noexcept {
         const uint64_t low_first = physical_start / HugePageSize;
         for (uint64_t index = low_first; index <= low_last; ++index) {
             uint64_t* directory = DirectoryFor(index * HugePageSize);
-            directory[index & 511] |= 0x18;
+            if ((directory[index & 511] & 0x83) != 0x83) return false;
+        }
+    }
+
+    const bool wc = ConfigureWriteCombining();
+    if (physical_start < FourGiB) {
+        const uint64_t low_last = ((f.address + length - 1) < FourGiB)
+            ? ((f.address + length - 1) / HugePageSize)
+            : ((FourGiB - 1) / HugePageSize);
+        const uint64_t low_first = physical_start / HugePageSize;
+        for (uint64_t index = low_first; index <= low_last; ++index) {
+            uint64_t* directory = DirectoryFor(index * HugePageSize);
+            SetLargePageType(directory[index & 511], wc);
         }
     }
 
@@ -96,7 +152,7 @@ bool MapFramebuffer(const Framebuffer& f, FramebufferMapping& out) noexcept {
         const uint64_t physical_page = physical_start + i * PageSize;
         if (physical_page >= PhysicalLimit) return false;
         framebuffer_pts[i / 512][i % 512] =
-            (physical_page & AddressMask) | 0x1B; // present, writable, PWT, PCD
+            (physical_page & AddressMask) | (wc ? 0x83 : 0x1B);
     }
     // Publish only after every entry has been validated and populated.
     framebuffer_pdpt[0] = reinterpret_cast<uint64_t>(framebuffer_pd) | 3;

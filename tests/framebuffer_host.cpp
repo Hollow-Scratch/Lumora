@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cassert>
+#include <algorithm>
 #include <cstdint>
 
 using Lumora::Graphics::Color;
@@ -48,5 +49,66 @@ int main() {
     fb.Clear({0x12, 0x34, 0x56});
     assert(bytes24[0] == 0x56 && bytes24[1] == 0x34 && bytes24[2] == 0x12);
     assert(bytes24[3] == 0 && bytes24[4] == 0); // pitch padding retained
+
+    // Differential coverage: compare clipped fast fills against an independent
+    // scalar implementation over odd pitches, both supported pixel widths,
+    // arbitrary channel order, and extreme signed coordinates.
+    uint32_t seed = 0x12345678;
+    auto next = [&seed]() {
+        seed = seed * 1664525u + 1013904223u;
+        return seed;
+    };
+    for (const FramebufferInfo format : {
+             FramebufferInfo{13, 9, 43, 24, 0, 8, 8, 8, 16, 8},
+             FramebufferInfo{13, 9, 57, 32, 0, 8, 8, 8, 16, 8}}) {
+        constexpr size_t Capacity = 700, Guard = 16;
+        std::array<uint8_t, Capacity + 2 * Guard> actual_storage{}, expected_storage{};
+        auto* actual = actual_storage.data() + Guard;
+        auto* expected = expected_storage.data() + Guard;
+        for (unsigned iteration = 0; iteration < 1000; ++iteration) {
+            for (size_t i = 0; i < Capacity; ++i)
+                actual[i] = expected[i] = static_cast<uint8_t>(next());
+            for (size_t i = 0; i < Guard; ++i) {
+                actual_storage[i] = expected_storage[i] = 0xD3;
+                actual_storage[Guard + Capacity + i] =
+                    expected_storage[Guard + Capacity + i] = 0x7E;
+            }
+            Framebuffer tested;
+            assert(tested.Initialize(actual, Capacity, format));
+            const int64_t x = iteration % 7 == 0 ? INT64_MIN :
+                static_cast<int32_t>(next() % 35) - 11;
+            const int64_t y = iteration % 11 == 0 ? INT64_MAX :
+                static_cast<int32_t>(next() % 27) - 9;
+            const int64_t w = iteration % 13 == 0 ? INT64_MAX : next() % 30;
+            const int64_t h = iteration % 17 == 0 ? INT64_MAX : next() % 20;
+            const Color color{static_cast<uint8_t>(next()), static_cast<uint8_t>(next()),
+                              static_cast<uint8_t>(next())};
+            tested.FillRect(x, y, w, h, color);
+            size_t required = 0;
+            assert(Framebuffer::Validate(format, Capacity, required));
+            const auto packed = Framebuffer::PackColor(format, color);
+            const uint8_t bpp = format.bits_per_pixel / 8;
+            if (w > 0 && h > 0) {
+                const int64_t ex = x > INT64_MAX - w ? INT64_MAX : x + w;
+                const int64_t ey = y > INT64_MAX - h ? INT64_MAX : y + h;
+                const int64_t x0 = std::max<int64_t>(x, 0);
+                const int64_t y0 = std::max<int64_t>(y, 0);
+                const int64_t x1 = std::min<int64_t>(ex, format.width);
+                const int64_t y1 = std::min<int64_t>(ey, format.height);
+                for (int64_t row = y0; row < y1; ++row)
+                    for (int64_t col = x0; col < x1; ++col)
+                        for (uint8_t byte = 0; byte < bpp; ++byte)
+                            expected[static_cast<size_t>(row) * format.pitch + col * bpp + byte] =
+                                static_cast<uint8_t>(packed >> (8 * byte));
+            }
+            assert(actual_storage == expected_storage);
+        }
+        Framebuffer tested;
+        assert(tested.Initialize(actual, Capacity, format));
+        tested.FillRect(0, 0, INT64_MAX, INT64_MAX, {3, 5, 7});
+        assert(actual_storage[0] == 0xD3 && actual_storage[Guard - 1] == 0xD3);
+        assert(actual_storage[Guard + Capacity] == 0x7E &&
+               actual_storage.back() == 0x7E);
+    }
     return 0;
 }

@@ -64,23 +64,30 @@ void WriteLine(const char* text, Level level = Level::Info) noexcept {
 }
 void ClearOutput() noexcept { first_line = line_count = scrollback = 0; NewLine(Level::Info); }
 
-void Render() noexcept {
+void Render(bool redraw_output = false) noexcept {
     auto& fb = Lumora::Graphics::Console();
     if (!fb.IsReady()) return;
-    fb.Clear(Background);
-    fb.DrawString(20, 10, "LUMORA KERNEL CONSOLE", PromptColor);
-    fb.DrawString(20, 22, Lumora::KernelVersion, Muted);
-    fb.DrawHorizontalLine(20, 36, static_cast<int64_t>(fb.Width()) - 40, {52, 64, 82});
+    if (redraw_output) {
+        fb.FillRect(0, 0, fb.Width(), fb.Height(), Background);
+        fb.DrawString(20, 10, "LUMORA KERNEL CONSOLE", PromptColor);
+        fb.DrawString(20, 22, Lumora::KernelVersion, Muted);
+        fb.DrawHorizontalLine(20, 36, static_cast<int64_t>(fb.Width()) - 40, {52, 64, 82});
+    }
     const size_t rows = fb.Height() > 80 ? (fb.Height() - 78) / 10 : 0;
     const size_t max_back = line_count > rows ? line_count - rows : 0;
     const size_t back = scrollback > max_back ? max_back : scrollback;
     const size_t visible = line_count - back < rows ? line_count - back : rows;
     const size_t skip = line_count - back - visible;
-    for (size_t row = 0; row < visible; ++row) {
-        const size_t logical = skip + row;
-        const Line& line = lines[(first_line + logical) % OutputLines];
-        fb.DrawString(20, 46 + static_cast<int64_t>(row) * 10,
-                      line.text, LevelColor(line.level));
+    if (redraw_output) {
+        const int64_t output_y = 40;
+        const int64_t output_height = static_cast<int64_t>(fb.Height()) - 70;
+        if (output_height > 0) fb.FillRect(0, output_y, fb.Width(), output_height, Background);
+        for (size_t row = 0; row < visible; ++row) {
+            const size_t logical = skip + row;
+            const Line& line = lines[(first_line + logical) % OutputLines];
+            fb.DrawString(20, 46 + static_cast<int64_t>(row) * 10,
+                          line.text, LevelColor(line.level));
+        }
     }
     const int64_t input_y = static_cast<int64_t>(fb.Height()) - 22;
     fb.FillRect(0, input_y - 4, fb.Width(), 26, {24, 30, 42});
@@ -132,7 +139,7 @@ void OnLog(const Entry& entry) noexcept {
     WriteLine(entry.text, entry.level);
     // Retain an existing scrollback view while logs append; the prompt and edit
     // buffer are redrawn from their model and cannot be overwritten by output.
-    Render();
+    Render(true);
 }
 }
 
@@ -141,7 +148,7 @@ void Initialize() noexcept {
     Lumora::Core::Log::SetSink(OnLog, false);
     WriteLine("Boot complete. Type 'help' for commands.");
     WriteLine("");
-    Render();
+    Render(true);
 }
 
 void Handle(const Lumora::Driver::Input::PS2Keyboard::KeyEvent& event) noexcept {
@@ -150,13 +157,13 @@ void Handle(const Lumora::Driver::Input::PS2Keyboard::KeyEvent& event) noexcept 
         const size_t rows = Lumora::Graphics::Console().Height() > 80 ?
             (Lumora::Graphics::Console().Height() - 78) / 10 : 1;
         scrollback += rows ? rows : 1;
-        Render(); return;
+        Render(true); return;
     }
     if (event.key == KeyCode::PageDown) {
         const size_t rows = Lumora::Graphics::Console().Height() > 80 ?
             (Lumora::Graphics::Console().Height() - 78) / 10 : 1;
         scrollback = scrollback > rows ? scrollback - rows : 0;
-        Render(); return;
+        Render(true); return;
     }
     char submitted[LineEditor::LineCapacity]{};
     const auto result = editor.Handle(event, submitted, sizeof(submitted));
@@ -179,7 +186,10 @@ void Handle(const Lumora::Driver::Input::PS2Keyboard::KeyEvent& event) noexcept 
         if (command_result == CommandResult::Clear) ClearOutput();
         scrollback = 0;
     }
-    if (result != LineEditor::Result::None) { scrollback = 0; Render(); }
+    if (result != LineEditor::Result::None) {
+        scrollback = 0;
+        Render(result == LineEditor::Result::Submitted);
+    }
 }
 
 } // namespace Lumora::Console::Terminal

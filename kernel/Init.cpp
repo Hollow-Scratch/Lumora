@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stddef.h>
 
 #include "Core/Log.hpp"
 #include "Core/Panic.hpp"
@@ -13,6 +14,49 @@
 #include "Driver/Input/PS2Keyboard/PS2Keyboard.hpp"
 
 namespace {
+void AppendText(char* output, size_t& used, const char* text) noexcept {
+    while (*text && used < 104) output[used++] = *text++;
+}
+
+void AppendDecimal(char* output, size_t& used, uint64_t value) noexcept {
+    char digits[20];
+    size_t count = 0;
+    do { digits[count++] = static_cast<char>('0' + value % 10); value /= 10; }
+    while (value && count < sizeof(digits));
+    while (count && used < 104) output[used++] = digits[--count];
+}
+
+void AppendHex(char* output, size_t& used, uint64_t value) noexcept {
+    static constexpr char hex[] = "0123456789ABCDEF";
+    bool started = false;
+    for (int shift = 60; shift >= 0; shift -= 4) {
+        const uint8_t nibble = static_cast<uint8_t>((value >> shift) & 0xF);
+        if (nibble || started || shift == 0) {
+            if (used < 104) output[used++] = hex[nibble];
+            started = true;
+        }
+    }
+}
+
+void LogFramebufferMode(const Lumora::Arch::x86::Framebuffer& f) noexcept {
+    char message[112]{};
+    size_t used = 0;
+    AppendText(message, used, "Framebuffer ");
+    AppendDecimal(message, used, f.width); AppendText(message, used, "x");
+    AppendDecimal(message, used, f.height); AppendText(message, used, " pitch=");
+    AppendDecimal(message, used, f.pitch); AppendText(message, used, " bpp=");
+    AppendDecimal(message, used, f.bits_per_pixel); AppendText(message, used, " rgb=");
+    AppendDecimal(message, used, f.red_position); AppendText(message, used, "/");
+    AppendDecimal(message, used, f.red_mask_size); AppendText(message, used, ",");
+    AppendDecimal(message, used, f.green_position); AppendText(message, used, "/");
+    AppendDecimal(message, used, f.green_mask_size); AppendText(message, used, ",");
+    AppendDecimal(message, used, f.blue_position); AppendText(message, used, "/");
+    AppendDecimal(message, used, f.blue_mask_size); AppendText(message, used, " addr=0x");
+    AppendHex(message, used, f.address);
+    message[used] = '\0';
+    Lumora::Core::Log::Info(message);
+}
+
 [[noreturn]] void Fail(Lumora::Core::PanicReason reason, const char* message) noexcept {
     Lumora::Core::Log::Error(message);
     Lumora::Core::Panic(reason, message, __FILE__, __LINE__);
@@ -91,6 +135,7 @@ extern "C" void kernel_main(uint32_t magic, uint32_t information_address) {
              "[FAIL] Framebuffer format, pitch, or channel masks are unsupported");
 
     Lumora::Console::BootScreen::Initialize();
+    LogFramebufferMode(source);
     Lumora::Core::Log::Info("[OK] Linear framebuffer initialized");
     Lumora::Core::Log::Info("[OK] Framebuffer console attached; early boot log replayed");
 
